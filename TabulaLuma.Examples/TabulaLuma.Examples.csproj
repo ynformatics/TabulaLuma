@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>TabulaLuma.Examples</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+
+	<Target Name="PostBuild" AfterTargets="PostBuildEvent">
+	  <Exec Command="robocopy $(TargetDir) %25LocalAppData%25\TabulaLuma\shared $(TargetFileName)&#xD;&#xA;&#xD;&#xA;if exist z:\shared\deploy_plugin.bat call z:\shared\deploy_plugin.bat $(TargetDir)" />
+	</Target>
+
+
+	<ItemGroup>
+	  <ProjectReference Include="..\TabulaLuma\TabulaLuma.csproj" />
+	</ItemGroup>
+</Project>
