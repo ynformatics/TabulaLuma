@@ -2,7 +2,7 @@
   "profiles": {
     "TabulaLuma": {
       "commandName": "Project",
-      "remoteDebugEnabled": true,
+      "remoteDebugEnabled": false,
       "remoteDebugMachine": "MINI-PC-2:4026"
     }
   }
