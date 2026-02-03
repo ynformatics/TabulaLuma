@@ -8,7 +8,7 @@ namespace TabulaLuma
 {
     public interface IHardware
     {
-        public int Initialise(Config config);
+        public nint Initialise(Config config);
         public void Shutdown();
         public void NewVideoFrame();
 

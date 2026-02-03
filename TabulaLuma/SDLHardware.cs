@@ -6,12 +6,12 @@ namespace TabulaLuma
     {
         SDLWindow* window = null;
         SDLRenderer* renderer = null;
-        public  int Initialise(Config config)
+        public nint Initialise(Config config)
         {
-            if (!SDL.Init(SDLInitFlags.Events | SDLInitFlags.Video| SDLInitFlags.Camera))
+            if (!SDL.Init(SDLInitFlags.Events | SDLInitFlags.Video))
             {
                 System.Console.WriteLine("SDL.Init failed: " + SDL.GetErrorS());
-                return 1;
+                return 0;
             }
             System.Console.WriteLine("SDL initialized");
 
@@ -20,7 +20,7 @@ namespace TabulaLuma
                 System.Console.WriteLine("Failed to create SDL window and renderer!");
                 System.Console.WriteLine(SDL.GetErrorS());
                 SDL.Quit();
-                return 1;
+                return 0;
             }
             System.Console.WriteLine("SDL window and renderer created");
             SDL.SetRenderDrawBlendMode(renderer, SDLBlendMode.Blend);
@@ -28,12 +28,13 @@ namespace TabulaLuma
             SDL.SetWindowAlwaysOnTop(window, true);
 
             SDL.StartTextInput(window);
-           
+
             SDL.HideCursor();
-            
             Renderer.renderer = renderer;
 
-            return 0;
+            var props = SDL.GetWindowProperties(window);
+            var hwnd = SDL.GetPointerProperty(props, SDL.SDL_PROP_WINDOW_WIN32_HWND_POINTER, (void*)0);
+            return (nint)hwnd;
         }
 
         public  void Shutdown()
