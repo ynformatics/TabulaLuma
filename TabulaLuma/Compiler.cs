@@ -123,8 +123,14 @@ public class {{className}} : ProgramBase
             false,
             null
         );
-        resolver.AddSearchDirectory(Assembly.GetExecutingAssembly().Location); 
-        
+        resolver.AddSearchDirectory(Path.GetDirectoryName(assemblyPath));
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            if (!asm.IsDynamic && !string.IsNullOrEmpty(asm.Location))
+            {
+                resolver.AddSearchDirectory(Path.GetDirectoryName(asm.Location));
+            }
+        }
         // Create the decompiler for the assembly
         var decompiler = new CSharpDecompiler(assemblyPath, resolver, new DecompilerSettings() { });
         // Find the RunImpl method using reflection
