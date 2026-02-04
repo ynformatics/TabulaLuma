@@ -1,5 +1,6 @@
 ﻿using OpenCvSharp;
 using System.Diagnostics;
+using Point = OpenCvSharp.Point;
 
 namespace TabulaLuma
 {
@@ -216,6 +217,9 @@ namespace TabulaLuma
         static int count = 0;
         static int rectHeight = 200;
         static int rectWidth = 200;
+        static int hueCountdown = 5; // ==0 when we have the hue
+        Scalar lowerBlue = new Scalar();
+        Scalar upperBlue = new Scalar();
         unsafe protected override void RunImpl()
         {
             When("(you) is calibrating", (b) =>
@@ -251,8 +255,6 @@ namespace TabulaLuma
                 });
                 int frameWidth = 1920;
                 int frameHeight = 1080;
-
-                var ill = new Illumination() { Priority = 0 };
                 var frameCentre = new Point2f(frameWidth / 2, frameHeight / 2);
                 var subRectWidth = 180;
                 var subRectHeight = 180;
@@ -264,25 +266,34 @@ namespace TabulaLuma
                 frameCentre + new Point2f(-rectWidth , rectHeight)
                     ];
 
-                int ord = -1;
-                var worldPts = TransformService.WorldPoints;
+                var ill = new Illumination() { Priority = 0 };
 
-                foreach (var corner in calRectCorners)
-                {
-                    ord++;
-                    Point2f offset = new Point2f(
-                        corner.X < frameCentre.X ? subRectWidth : -subRectWidth,
-                        corner.Y < frameCentre.Y ? subRectHeight : -subRectHeight);
-                    Point2f[] subRectCorners = [
-                        corner,
-                    corner + new Point2f(offset.X, 0),
-                    corner + offset,
-                    corner + new Point2f(0, offset.Y)
+                if (hueCountdown == 0)
+                {                
+                    int ord = -1;
+                    var worldPts = TransformService.WorldPoints;
+
+                    foreach (var corner in calRectCorners)
+                    {
+                        ord++;
+                        Point2f offset = new Point2f(
+                            corner.X < frameCentre.X ? subRectWidth : -subRectWidth,
+                            corner.Y < frameCentre.Y ? subRectHeight : -subRectHeight);
+                        Point2f[] subRectCorners = [
+                            corner,
+                            corner + new Point2f(offset.X, 0),
+                            corner + offset,
+                            corner + new Point2f(0, offset.Y)
                         ];
-                    ill.FilledQuad(subRectCorners, "blue");
-                    ill.Text($"({worldPts[ord].X},{worldPts[ord].Y})", corner + offset.Multiply(0.5f), "white");
+                        ill.FilledQuad(subRectCorners, "blue");
+                        ill.Text($"({worldPts[ord].X},{worldPts[ord].Y})", corner + offset.Multiply(0.5f), "white");
+                    }
                 }
-
+                else
+                {
+                    ill.FilledQuad([new Point2f(0,0), new Point2f(frameWidth,0), new Point2f(frameWidth,frameHeight), new Point2f(0,frameHeight)], "blue");
+                    hueCountdown--;
+                }
                 Wish($"calibration has illumination '{ill}'");
 
                 When("(-1) has appearance /image/", (b) =>
@@ -290,54 +301,67 @@ namespace TabulaLuma
                     var img = Reference.Get<Mat>(b.String("image"));
                     if (img?.Data == 0)
                         return;
-                    //     var bitmap = new Bitmap(img.Width, img.Height, img.Step, System.Drawing.Imaging.PixelFormat.Format24bppRgb, img.Data);
-                    //        bitmap.Save(@"Z:\transfer\debug_image.bmp");
                     var mat = Mat.FromPixelData(img.Height, img.Width, MatType.CV_8UC3, img.Data, img.Step());
+                 //   Cv2.ImWrite(@"Z:\transfer\debug_image.bmp", mat);
                     var hsv = new Mat();
                     Cv2.CvtColor(mat, hsv, ColorConversionCodes.BGR2HSV);
-                    //set range for blue mask
-                    var lowerBlue = new OpenCvSharp.Scalar(80, 30, 50);
-                    var upperBlue = new OpenCvSharp.Scalar(130, 255, 255);
 
-                    var blueMask = new Mat();
-                    Cv2.InRange(hsv, lowerBlue, upperBlue, blueMask);
-
-                    Cv2.FindContours(blueMask, out Point[][] contours, out HierarchyIndex[] hierarchy, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
-
-                    contours = contours.Where(c =>
+                    if (hueCountdown == 0)
                     {
-                        var area = Cv2.ContourArea(c);
-                        return area > 5000;
-                    }).ToArray();
-                    contours = contours.Where(c => { var r = Cv2.MinAreaRect(c); return Math.Abs(r.Size.Height - r.Size.Width) < 15; }).ToArray();
-                    if (contours.Length == 4)
-                    {
-                        var illLock = new Illumination();
-                        illLock.FillCircle(frameCentre, 5, "blue");
-                        Wish($"calibration has illumination '{illLock}'");
-                        var boxPoints = new List<Point2f>();
-                        foreach (var contour in contours)
+                        var blueMask = new Mat();
+                        Cv2.InRange(hsv, lowerBlue, upperBlue, blueMask);
+                   //     Cv2.ImWrite(@"Z:\transfer\blue_mask.png", blueMask);
+                        Cv2.FindContours(blueMask, out OpenCvSharp.Point[][] contours, out HierarchyIndex[] hierarchy, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
+
+                        contours = contours.Where(c =>
                         {
-                            var rrect = Cv2.MinAreaRect(contour);
-                            boxPoints.AddRange(Cv2.BoxPoints(rrect));
+                            var area = Cv2.ContourArea(c);
+                            return area > 5000;
+                        }).ToArray();
+                        contours = contours.Where(c =>
+                        {
+                            var r = Cv2.MinAreaRect(c);
+                            return Math.Abs(r.Size.Height - r.Size.Width) < 15;
+                        }).ToArray();
+
+                        if (contours.Length == 4)
+                        {
+                            var illLock = new Illumination();
+                            illLock.FillCircle(frameCentre, 5, "blue");
+                            Wish($"calibration has illumination '{illLock}'");
+                            var boxPoints = new List<Point2f>();
+                            foreach (var contour in contours)
+                            {
+                                var rrect = Cv2.MinAreaRect(contour);
+                                boxPoints.AddRange(Cv2.BoxPoints(rrect));
+                            }
+                            var topLeft = boxPoints.OrderBy(p => p.X + p.Y).First();
+                            var topRight = boxPoints.OrderBy(p => -p.X + p.Y).First();
+                            var bottomRight = boxPoints.OrderBy(p => -p.X - p.Y).First();
+                            var bottomLeft = boxPoints.OrderBy(p => p.X - p.Y).First();
+
+                            When("(you) is saving", b =>
+                            {
+                                Forget("(you) is saving");
+
+                                TransformService.SetCamera([topLeft, topRight, bottomRight, bottomLeft]);
+                                TransformService.SetProjector(calRectCorners);
+                                SaveMemories();
+                                var illConf = new Illumination();
+                                illConf.Text("Saved!", frameCentre + new Point2f(0, 40), "white");
+                                Debug.WriteLine("Saved!");
+                                Remember($"[for (2) seconds] calibration has illumination '{illConf}'");
+                            });
                         }
-                        var topLeft = boxPoints.OrderBy(p => p.X + p.Y).First();
-                        var topRight = boxPoints.OrderBy(p => -p.X + p.Y).First();
-                        var bottomRight = boxPoints.OrderBy(p => -p.X - p.Y).First();
-                        var bottomLeft = boxPoints.OrderBy(p => p.X - p.Y).First();
+                    }
+                    else
+                    {
+                        Vec3b hsvPixel = hsv.At<Vec3b>(hsv.Height/2, hsv.Width/2);
+                        byte h = hsvPixel.Item0;
+                        Debug.WriteLine($"Hue: {h}");
+                        lowerBlue = new Scalar(Math.Max(0, hsvPixel.Item0 - 10), 50, 50);
+                        upperBlue = new Scalar(Math.Min(179, hsvPixel.Item0 + 10), 255, 255);
 
-                        When("(you) is saving", b =>
-                        {
-                            Forget("(you) is saving");
-
-                            TransformService.SetCamera([topLeft, topRight, bottomRight, bottomLeft]);
-                            TransformService.SetProjector(calRectCorners);
-                            SaveMemories();
-                            var illConf = new Illumination();
-                            illConf.Text("Saved!", frameCentre + new Point2f(0, 40), "white");
-                            Debug.WriteLine("Saved!");
-                            Remember($"[for (2) seconds] calibration has illumination '{illConf}'");
-                        });
                     }
                 });
             }).Otherwise(() =>
@@ -350,6 +374,7 @@ namespace TabulaLuma
 
                     if (scancode == KeyScanCodes.L && control)
                     {
+                        hueCountdown = 5;
                         When("(you) has calibration rectangle width /width/ height /height/", (b) =>
                         {
                             rectHeight = b.Int("height");
@@ -380,37 +405,39 @@ namespace TabulaLuma
 
                 When($"(99994) has new key /key/", b =>
                 {
-                    var key = b.Json<KeyEvent>("key");
-                    var scancode = (KeyScanCodes)key.ScanCode;
-                    var control = key.Control;
+                var key = b.Json<KeyEvent>("key");
+                var scancode = (KeyScanCodes)key.ScanCode;
+                var control = key.Control;
 
-                    switch (scancode)
-                    {
-                        case KeyScanCodes.Escape:
-                            ServiceProvider.GetService<ITransformService>()!.Masking = true;
+                switch (scancode)
+                {
+                    case KeyScanCodes.Escape:
+                        ServiceProvider.GetService<ITransformService>()!.Masking = true;
 
-                            Forget("(you) is deep calibrating");
-                            return;
-                        case KeyScanCodes.S:
-                            if (key.Control)
-                            {
-                                Remember("[for (2) seconds] (-2) is labelled 'Saving...' with priority (1000)");
-                                var config = EngineService.Config;
-                                config.CornerFrame.MinArea = minArea;
-                                config.CornerFrame.MaxArea = maxArea;
-                                config.Camera.Focus = focus;
-                                config.Camera.Exposure = exposure;
-                                config.Save();
-                            }
-                            return;
-
+                        Forget("(you) is deep calibrating");
+                        return;
+                    case KeyScanCodes.S:
+                        if (key.Control)
+                        {
+                            Remember("[for (2) seconds] (-2) is labelled 'Saving...' with priority (1000)");
+                            var config = EngineService.Config;
+                            config.CornerFrame.MinArea = minArea;
+                            config.CornerFrame.MaxArea = maxArea;
+                            config.Camera.Focus = focus;
+                            config.Camera.Exposure = exposure;
+                            config.Save();
+                        }
+                        return;
+                    case KeyScanCodes.P:
+                        EngineService.ShowPropertiesPage();
+                            break;
                         case KeyScanCodes.E:
                             exposure += key.Shift ? 1 : -1;
-                            EngineService.Exposure = exposure;
+                 //           EngineService.Exposure = exposure;
                             break;
                         case KeyScanCodes.F:
                             focus += key.Shift ? 5 : -5;
-                            EngineService.Focus = focus;
+                 //          EngineService.Focus = focus;
                             break;
                         case KeyScanCodes.N:
                             minArea += key.Shift ? 20 : -20;
@@ -428,7 +455,6 @@ namespace TabulaLuma
                         return;
                     //     var bitmap = new Bitmap(img.Width, img.Height, img.Step, System.Drawing.Imaging.PixelFormat.Format24bppRgb, img.Data);
                     //        bitmap.Save(@"Z:\transfer\debug_image.bmp");
-                    // var raw = img;
                     var grey = new Mat();
                     Cv2.CvtColor(img, grey, ColorConversionCodes.BGR2GRAY);
                     var thresh = new Mat();
@@ -457,7 +483,7 @@ namespace TabulaLuma
                     }
                     Cv2.DrawContours(final, contours, -1, Scalar.Red, 2);
 
-                    Cv2.PutText(final, $"miN area: {minArea} maX area: {maxArea} Focus: {EngineService.Focus} Exposure: {EngineService.Exposure}", new Point(10, 30), HersheyFonts.HersheySimplex, 1, Scalar.Yellow, 2);
+                    Cv2.PutText(final, $"miN area: {minArea} maX area: {maxArea} Press P for Camera Properties", new Point(10, 30), HersheyFonts.HersheySimplex, 1, Scalar.Yellow, 2);
                     var ill = new Illumination();
                     ill.Image(Reference.Create<Mat>(Reference.Lifetimes.Frame, final), new Point2f(0, 0), (float)img.Width, (float)img.Height);
                     Wish($"(-2) has illumination '{ill}'");
@@ -474,8 +500,6 @@ namespace TabulaLuma
                     {
                         minArea = EngineService.Config.CornerFrame.MinArea;
                         maxArea = EngineService.Config.CornerFrame.MaxArea;
-                        focus = EngineService.Config.Camera.Focus;
-                        exposure = EngineService.Config.Camera.Exposure;
                         Remember($"[for this session] (you) is deep calibrating");
                     }
                 });
@@ -664,92 +688,4 @@ namespace TabulaLuma
             Wish($"(4) draws 'circle' with x (80) y (80)");
         }
     }
-
-    //public class Program00002 : ProgramBase
-    //{
-    //    public override int Id => 2;
-    //    protected override void RunImpl()
-    //    {
-    //        When("(you) has width /width/")
-    //         .And("(you) has height /height/")
-    //         .And("the clock time is /t/", (b) =>
-    //         {
-    //             var ill = new Illumination();
-    //             var width = b.Float("width");
-    //             var height = b.Float("height");
-    //             var centre = new Point2f(width / 2, height / 2);
-    //             ill.Circle(centre, 40, "red");
-
-    //             Wish($"(you) has illumination '{ill}'");
-
-    //             var t = (int)b.Float("t");
-    //             Wish($"(you) is labelled '{t}'");
-
-    //         });
-    //    }
-    //}
-    //public class Program00003 : ProgramBase
-    //{
-    //    public override int Id => 3;
-    //    protected override void RunImpl()
-    //    {
-    //        When("(-1) has appearance /image/")
-    //            .And("(you) has width /width/")
-    //            .And("(you) has height /height/", (b) =>
-    //            {
-    //                var width = b.Float("width");
-    //                var height = b.Float("height");
-    //                var imageRef = b.String("image");
-
-    //                var ill = new Illumination();
-    //                ill.Image(imageRef, new Point2f(0, 0), width, height);
-    //                Wish($"(you) has illumination '{ill}'");
-    //            });
-    //    }
-    //}
-    //public class Program00006 : ProgramBase
-    //{
-    //    public override int Id => 6;
-    //    protected override void RunImpl()
-    //    {
-    //        When("(-1) has appearance /image/")
-    //            .And("(you) has width /width/")
-    //            .And("(you) has height /height/", (b) =>
-    //            {
-    //                var width = b.Float("width");
-    //                var height = b.Float("height");
-    //                var imageRef = b.String("image");
-
-    //                var ill = new Illumination();
-    //                ill.Image(imageRef, new Point2f(0, 0), width, height);
-    //                Wish($"(you) has illumination '{ill}'");
-    //            });
-    //    }
-    //}
-    //public class Program00004 : ProgramBase
-    //{
-    //    public override int Id => 4;
-    //    protected override void RunImpl()
-    //    {
-    //        When("(you) has region /region/ on /supporter/")
-    //            .And("/other/ has region /otherregion/ on /supporter/"
-    //         , (b) =>
-    //         {
-    //             var supporter = b.Int("supporter");
-    //             var region = b.Point2fArray("region");
-    //             var otherregion = b.Point2fArray("otherregion");
-    //             var other = b.Int("other");
-
-    //             if (other != 4)
-    //             {
-    //                 var centre = (region[0] + region[2]).Multiply(.5f);
-    //                 var othercentre = (otherregion[0] + otherregion[2]).Multiply(.5f);
-
-    //                 var ill = new Illumination();
-    //                 ill.Line(centre, othercentre, "yellow");
-    //                 Wish($"({supporter}) has illumination '{ill}'");
-    //             }
-    //         });
-    //    }
-    //}
 }
