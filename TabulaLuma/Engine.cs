@@ -1,8 +1,12 @@
-﻿using Hexa.NET.SDL3;
+﻿using FlashCap;
+using FlashCap.Utilities;
+using Hexa.NET.SDL3;
 using OpenCvSharp;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Drawing;
 using System.Reflection;
+using System.Reflection.PortableExecutable;
 using System.Text;
 
 namespace TabulaLuma
@@ -19,49 +23,18 @@ namespace TabulaLuma
 
          Mat matSupporter = new Mat();
          string fileStorePath;
-         VideoCapture videoCapture;
+        CaptureDevice captureDevice;
+        nint windowHandle = 0;
 
-         // IEngineService implementation
-         string IEngineService.FileStorePath => fileStorePath; 
-         int IEngineService.Focus { 
-            get { return (int)videoCapture.Get(VideoCaptureProperties.Focus);} 
-            set {videoCapture.Set(VideoCaptureProperties.Focus, value);} }
-         int IEngineService.Exposure { 
-            get { return (int)videoCapture.Get(VideoCaptureProperties.Exposure);} 
-            set { videoCapture.Set(VideoCaptureProperties.Exposure, value);} }
+        // IEngineService implementation
+        string IEngineService.FileStorePath => fileStorePath;     
+        void IEngineService.ShowPropertiesPage()
+        {
+            captureDevice?.ShowPropertyPageAsync(windowHandle);
+        }
         Config IEngineService.Config => config;
         Database IEngineService.Database => db;
-        int GetCameraIndex(string name, out string details)
-        {
-            details = string.Empty;
-            var sb = new StringBuilder();
-            unsafe
-            {
-                int cameraIndex = -1;
-                int cameraCount = 0;
-                var cameras = SDL.GetCameras(ref cameraCount);
-                if(cameraCount == 0)
-                    return -1;
-
-                for (int i = 0; i < cameraCount; i++)
-                {
-                    var fullName = SDL.GetCameraNameS(cameras[i]);
-                    if (fullName.Contains(name))
-                        cameraIndex = i;
-
-                    int specCounts = 0;
-                    SDLCameraSpec** specs = SDL.GetCameraSupportedFormats(cameras[i], ref specCounts);
-                    sb.AppendLine($"{i}: \"{fullName}\"");
-                    for (int j = 0; j < specCounts; j++)
-                    {
-                        var spec = specs[j];
-                        sb.AppendLine($"\t{spec->Width}x{spec->Height} Format: {Enum.GetName(typeof(SDLPixelFormat), spec->Format)} FPS: {spec->FramerateNumerator}/{spec->FramerateDenominator}");
-                    }
-                }
-                details = sb.ToString();
-                return cameraIndex;
-            }
-        }
+     
         public  async Task<int> Start(IHardware hardware)
         {
             System.Console.WriteLine("Hello, World!");
@@ -113,7 +86,7 @@ namespace TabulaLuma
                 }
             }
 
-            hardware.Initialise(config);
+            windowHandle = hardware.Initialise(config);
 
             if (!transformer.IsCalibrated)
             {
@@ -136,70 +109,55 @@ namespace TabulaLuma
             int frameWidth = config.FrameWidth;
             int frameHeight = config.FrameHeight;
 
-            int cameraIndex = GetCameraIndex(config.Camera.Name, out var details);
-            if(cameraIndex == -1)
+            var devices = new CaptureDevices();
+            var descriptor0 = devices.EnumerateDescriptors()
+            .Where(d => d.DeviceType == DeviceTypes.DirectShow 
+            && d.Name.Contains(config.Camera.Name)
+            && d.Characteristics.Any(c => c.PixelFormat == PixelFormats.JPEG && c.Width >= frameWidth && c.Height >= frameHeight))
+            .FirstOrDefault();
+            if(descriptor0 == null)
             {
-                System.Console.WriteLine($"Failed to find camera: \"{config.Camera.Name}\"");
-                System.Console.WriteLine("Available cameras:");
-                System.Console.WriteLine(details);
+                System.Console.WriteLine($"Failed to find camera: \"{config.Camera.Name}\" with required format!");
                 hardware.Shutdown();
                 return 1;
             }
-            int[] parms =
-            [
-                (int)VideoCaptureProperties.FrameWidth, frameWidth,
-                (int)VideoCaptureProperties.FrameHeight, frameHeight,
-                (int)VideoCaptureProperties.FourCC, VideoWriter.FourCC('M', 'J', 'P', 'G'),
-                (int)VideoCaptureProperties.AutoFocus, 0, // turn off auto focus
-                (int)VideoCaptureProperties.Focus, config.Camera.Focus,
-                (int)VideoCaptureProperties.AutoExposure, 0, // turn off auto exposure
-                (int)VideoCaptureProperties.Exposure, config.Camera.Exposure,
-                (int)VideoCaptureProperties.AutoWB, 0, // turn off auto white balance
-            ];
+            var characteristics = new VideoCharacteristics(
+            PixelFormats.JPEG, 1920, 1080, 30);
 
-            videoCapture = new VideoCapture(cameraIndex, VideoCaptureAPIs.DSHOW);
-       
-            if (!videoCapture.IsOpened())
+            var cameraTask = Task.Run(async () =>
             {
-                System.Console.WriteLine("Failed to open camera!");
-                hardware.Shutdown();
-                return 1;
-            }
-            for(int i = 0; i < parms.Length; i += 2)
-            {
-                if(!videoCapture.Set((VideoCaptureProperties)parms[i], parms[i + 1]))
-                    Debug.WriteLine($"Failed to set {((VideoCaptureProperties)parms[i]).ToString()} to {parms[i +1]}");
-            }
-            System.Console.WriteLine($"Camera opened({videoCapture.FrameWidth} x {videoCapture.FrameHeight})");
-
-            var running = true;
-           
-            float fpsSmooth = 0;
-            ulong prevTimestamp = 0;
-
-            var captureTask = Task.Run(() =>
-            {
-                Mat frame = new Mat();
-                while (running)
-                {                  
-                    if (videoCapture.Read(frame))
+                captureDevice = await descriptor0.OpenAsync(
+                    characteristics,
+                    bufferScope =>
                     {
-                        // Remove and dispose all old frames
+                        var image = bufferScope.Buffer.CopyImage();
+                        var frame = Mat.FromImageData(image.ToArray(), ImreadModes.Color);
+
+                        //Remove and dispose all old frames
                         while (frames.TryTake(out var oldFrame))
                         {
                             oldFrame.Dispose();
                         }
-                        // Add the latest frame
-                        frames.Add(frame.Clone());
-
+                      
                         lock (matSupporterLock)
                         {
                             matSupporter?.Dispose();
                             matSupporter = frame.Clone();
-                        }                     
-                    }               
-                }
+                        }
+                        // Add the latest frame
+                        frames.Add(frame.Clone());
+                    },
+                    default
+                );
+
+                await captureDevice.StartAsync(default);
+                await Task.Delay(Timeout.Infinite);
             });
+
+            var running = true;
+
+            float fpsSmooth = 0;
+            ulong prevTimestamp = 0;
 
             void RemoveExpiredFiducialCacheItems()
             {
@@ -239,9 +197,7 @@ namespace TabulaLuma
                 {
                      if (frames.TryTake(out var oldFrame))
                     {
-                        //var bitmap = new Bitmap(img.Width, img.Height, (int)img.Step(), System.Drawing.Imaging.PixelFormat.Format24bppRgb, img.Data);
-                        //bitmap.Save(@"Z:\transfer\raw_image.bmp");
-
+                        //Cv2.ImWrite(@"Z:\transfer\raw_image.jpg", oldFrame);
                         using var gray = new OpenCvSharp.Mat();
                         OpenCvSharp.Cv2.CvtColor(oldFrame, gray, OpenCvSharp.ColorConversionCodes.BGR2GRAY);
                         oldFrame.Dispose();
@@ -256,7 +212,7 @@ namespace TabulaLuma
 
                         if (!hardware.PollKeyboard(keyboard))
                              break;
-
+             
                         hardware.NewVideoFrame();
 
                         foreach (var program in programs)
@@ -319,7 +275,7 @@ namespace TabulaLuma
                         }
 
                         lock (matSupporterLock)
-                        {                  
+                        {
                             string matRef = Reference.Create<Mat>(Reference.Lifetimes.Frame, matSupporter);
                             if (Claim.TryParse(-1, $"(-1) has appearance '{matRef}'", out var appearanceClaim).Success)
                             {
@@ -344,14 +300,8 @@ namespace TabulaLuma
             finally
             {
                 running = false;
-                captureTask.Wait();
-
-                videoCapture.Release();
-                videoCapture.Dispose();
-
-                hardware.Shutdown();
-                
-            
+                cameraTask.Wait();
+                hardware.Shutdown();                        
             }
             return 0;
         }
