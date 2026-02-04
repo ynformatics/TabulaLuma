@@ -217,7 +217,7 @@ namespace TabulaLuma
         static int count = 0;
         static int rectHeight = 200;
         static int rectWidth = 200;
-        static int hueCountdown = 5; // ==0 when we have the hue
+        static int hueCountdown = 30; // drops to 0 when we have the hue
         Scalar lowerBlue = new Scalar();
         Scalar upperBlue = new Scalar();
         unsafe protected override void RunImpl()
@@ -288,13 +288,14 @@ namespace TabulaLuma
                         ill.FilledQuad(subRectCorners, "blue");
                         ill.Text($"({worldPts[ord].X},{worldPts[ord].Y})", corner + offset.Multiply(0.5f), "white");
                     }
+                    Wish($"calibration has illumination '{ill}'");
                 }
                 else
                 {
                     ill.FilledQuad([new Point2f(0,0), new Point2f(frameWidth,0), new Point2f(frameWidth,frameHeight), new Point2f(0,frameHeight)], "blue");
                     hueCountdown--;
+                    Wish($"calibration has illumination '{ill}'");
                 }
-                Wish($"calibration has illumination '{ill}'");
 
                 When("(-1) has appearance /image/", (b) =>
                 {
@@ -302,7 +303,7 @@ namespace TabulaLuma
                     if (img?.Data == 0)
                         return;
                     var mat = Mat.FromPixelData(img.Height, img.Width, MatType.CV_8UC3, img.Data, img.Step());
-                 //   Cv2.ImWrite(@"Z:\transfer\debug_image.bmp", mat);
+                   // Cv2.ImWrite(@"Z:\transfer\debug_image.bmp", mat);
                     var hsv = new Mat();
                     Cv2.CvtColor(mat, hsv, ColorConversionCodes.BGR2HSV);
 
@@ -310,7 +311,7 @@ namespace TabulaLuma
                     {
                         var blueMask = new Mat();
                         Cv2.InRange(hsv, lowerBlue, upperBlue, blueMask);
-                   //     Cv2.ImWrite(@"Z:\transfer\blue_mask.png", blueMask);
+                       // Cv2.ImWrite(@"Z:\transfer\blue_mask.png", blueMask);
                         Cv2.FindContours(blueMask, out OpenCvSharp.Point[][] contours, out HierarchyIndex[] hierarchy, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
 
                         contours = contours.Where(c =>
@@ -357,10 +358,9 @@ namespace TabulaLuma
                     else
                     {
                         Vec3b hsvPixel = hsv.At<Vec3b>(hsv.Height/2, hsv.Width/2);
-                        byte h = hsvPixel.Item0;
-                        Debug.WriteLine($"Hue: {h}");
-                        lowerBlue = new Scalar(Math.Max(0, hsvPixel.Item0 - 10), 50, 50);
-                        upperBlue = new Scalar(Math.Min(179, hsvPixel.Item0 + 10), 255, 255);
+                        //Debug.WriteLine($"Hue: {hsvPixel.Item0} Sat: {hsvPixel.Item1} Val: {hsvPixel.Item2}");
+                        lowerBlue = new Scalar(Math.Max(0, hsvPixel.Item0 - 5), 150, 150);
+                        upperBlue = new Scalar(Math.Min(179, hsvPixel.Item0 + 5), 255, 255);
 
                     }
                 });
@@ -374,7 +374,7 @@ namespace TabulaLuma
 
                     if (scancode == KeyScanCodes.L && control)
                     {
-                        hueCountdown = 5;
+                        hueCountdown = 30; // give it 30 frames to ensure a good sample
                         When("(you) has calibration rectangle width /width/ height /height/", (b) =>
                         {
                             rectHeight = b.Int("height");
@@ -430,15 +430,7 @@ namespace TabulaLuma
                         return;
                     case KeyScanCodes.P:
                         EngineService.ShowPropertiesPage();
-                            break;
-                        case KeyScanCodes.E:
-                            exposure += key.Shift ? 1 : -1;
-                 //           EngineService.Exposure = exposure;
-                            break;
-                        case KeyScanCodes.F:
-                            focus += key.Shift ? 5 : -5;
-                 //          EngineService.Focus = focus;
-                            break;
+                            break;                      
                         case KeyScanCodes.N:
                             minArea += key.Shift ? 20 : -20;
                             break;
