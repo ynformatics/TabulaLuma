@@ -1,4 +1,5 @@
-﻿using OpenCvSharp;
+﻿using ICSharpCode.Decompiler.IL;
+using OpenCvSharp;
 using System.Diagnostics;
 using Point = OpenCvSharp.Point;
 
@@ -302,14 +303,13 @@ namespace TabulaLuma
                     var img = Reference.Get<Mat>(b.String("image"));
                     if (img?.Data == 0)
                         return;
-                    var mat = Mat.FromPixelData(img.Height, img.Width, MatType.CV_8UC3, img.Data, img.Step());
-                   // Cv2.ImWrite(@"Z:\transfer\debug_image.bmp", mat);
+                    // Cv2.ImWrite(@"Z:\transfer\debug_image.bmp", mat);
                     var hsv = new Mat();
-                    Cv2.CvtColor(mat, hsv, ColorConversionCodes.BGR2HSV);
+                    Cv2.CvtColor(img, hsv, ColorConversionCodes.BGR2HSV);
 
                     if (hueCountdown == 0)
                     {
-                        var blueMask = new Mat();
+                        using var blueMask = new Mat();
                         Cv2.InRange(hsv, lowerBlue, upperBlue, blueMask);
                        // Cv2.ImWrite(@"Z:\transfer\blue_mask.png", blueMask);
                         Cv2.FindContours(blueMask, out OpenCvSharp.Point[][] contours, out HierarchyIndex[] hierarchy, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
@@ -350,6 +350,12 @@ namespace TabulaLuma
                                 SaveMemories();
                                 var illConf = new Illumination();
                                 illConf.Text("Saved!", frameCentre + new Point2f(0, 40), "white");
+                                var wpts = TransformService.WorldPoints;
+                                var pts = TransformService.WorldToProjector(wpts).ToArray();
+                                illConf.Line(pts[0], pts[1], "red");
+                                illConf.Line(pts[1], pts[2], "red");
+                                illConf.Line(pts[2], pts[3], "red");
+                                illConf.Line(pts[3], pts[0], "red");
                                 Debug.WriteLine("Saved!");
                                 Remember($"[for (2) seconds] calibration has illumination '{illConf}'");
                             });
@@ -357,8 +363,8 @@ namespace TabulaLuma
                     }
                     else
                     {
+                        // sample centre pixel
                         Vec3b hsvPixel = hsv.At<Vec3b>(hsv.Height/2, hsv.Width/2);
-                        //Debug.WriteLine($"Hue: {hsvPixel.Item0} Sat: {hsvPixel.Item1} Val: {hsvPixel.Item2}");
                         lowerBlue = new Scalar(Math.Max(0, hsvPixel.Item0 - 5), 150, 150);
                         upperBlue = new Scalar(Math.Min(179, hsvPixel.Item0 + 5), 255, 255);
 
@@ -394,9 +400,7 @@ namespace TabulaLuma
         static int count = 0;
         double minArea = 200;
         double maxArea = 200;
-        int focus;
-        int exposure;
-        static int nonSquarishnessThreshold = 10;
+
         unsafe protected override void RunImpl()
         {
             When("(you) is deep calibrating", (b) =>
@@ -423,8 +427,6 @@ namespace TabulaLuma
                             var config = EngineService.Config;
                             config.CornerFrame.MinArea = minArea;
                             config.CornerFrame.MaxArea = maxArea;
-                            config.Camera.Focus = focus;
-                            config.Camera.Exposure = exposure;
                             config.Save();
                         }
                         return;
@@ -445,12 +447,15 @@ namespace TabulaLuma
                     var img = Reference.Get<Mat>(b.String("image"));
                     if (img == null || img.Data == 0)
                         return;
-                    //     var bitmap = new Bitmap(img.Width, img.Height, img.Step, System.Drawing.Imaging.PixelFormat.Format24bppRgb, img.Data);
-                    //        bitmap.Save(@"Z:\transfer\debug_image.bmp");
+                    //Cv2.ImWrite(@"Z:\transfer\debug_image.bmp", img);
+
                     var grey = new Mat();
                     Cv2.CvtColor(img, grey, ColorConversionCodes.BGR2GRAY);
+                    var corners = CornerFrame.GetCornersFromImage(grey, minArea, maxArea);
+               
                     var thresh = new Mat();
-                    Cv2.Threshold(grey, thresh, 0, 255, ThresholdTypes.Otsu);
+                    Cv2.Threshold(grey, thresh, 0, 255, ThresholdTypes.Otsu | ThresholdTypes.BinaryInv);
+
                     var final = new Mat();
                     Cv2.CvtColor(thresh, final, ColorConversionCodes.GRAY2BGR);
 
@@ -461,21 +466,16 @@ namespace TabulaLuma
                         var area = Cv2.ContourArea(c);
                         return area >= minArea && area <= maxArea;
                     }).ToArray();
-
-
-                    foreach (var contour in contours)
-                    {
-                        var area = Cv2.ContourArea(contour);
-                        //     Debug.WriteLine(area);
-                        var rrect = Cv2.MinAreaRect(contour);
-                        if (Math.Abs(rrect.Size.Width - rrect.Size.Height) < nonSquarishnessThreshold)
-                        {
-                            Cv2.Polylines(final, new Point[][] { Cv2.BoxPoints(rrect).Select(p => (Point)p).ToArray() }, true, Scalar.Lime, 2);
-                        }
-                    }
+                  
                     Cv2.DrawContours(final, contours, -1, Scalar.Red, 2);
 
+                    foreach(var corner in corners)
+                    {
+                        Cv2.Polylines(final, new Point[][] { corner.Points.Select( p => new Point(p.X, p.Y)).ToArray() }, true, Scalar.Lime, 2);
+                    }
+
                     Cv2.PutText(final, $"miN area: {minArea} maX area: {maxArea} Press P for Camera Properties", new Point(10, 30), HersheyFonts.HersheySimplex, 1, Scalar.Yellow, 2);
+
                     var ill = new Illumination();
                     ill.Image(Reference.Create<Mat>(Reference.Lifetimes.Frame, final), new Point2f(0, 0), (float)img.Width, (float)img.Height);
                     Wish($"(-2) has illumination '{ill}'");

@@ -4,19 +4,17 @@ using System.Diagnostics;
 
 namespace TabulaLuma
 {
-    public enum CornerOrientation { Unknown, TopLeft, TopRight, BottomLeft, BottomRight }
     public class Corner
     {
         public Point2f[] Points { get; private set; }
         public ushort Code { get; private set; }
-        public int CornerPointIndex { get; private set; }
-        public Point2f CornerPoint => Points[CornerPointIndex];
+        public int CornerPointIndex { get; private set; } = 0;
+        public Point2f CornerPoint => Points[0];
  
-        public Corner( ushort code, Point2f[] points, int cornerPointIndex)
+        public Corner( ushort code, Point2f[] points)
         {
             Code = code;
             Points = points;
-            CornerPointIndex = cornerPointIndex;
         }
     }
   
@@ -45,6 +43,7 @@ namespace TabulaLuma
                 }
                 else
                 {
+                    //Debug.WriteLine($"3 corners:{id}");
                     var cw = corners[(i + 1) % 4];
                     var ccw = corners[(i + 3) % 4];
                  
@@ -111,8 +110,8 @@ namespace TabulaLuma
         public static List<CornerFrame> GroupCornersIntoFrames(IList<Corner> corners)
         {
             var cornerFrames = new List<CornerFrame>();
-
-            var groups = corners.DistinctBy(c => c.Code).GroupBy(c => c.Code / 4).Where(g => g.Count() >= 3).ToArray();
+            var minCorners = 3;
+            var groups = corners.DistinctBy(c => c.Code).GroupBy(c => c.Code / 4).Where(g => g.Count() >= minCorners).ToArray();
 
             foreach(var group in groups)
             {
@@ -120,13 +119,51 @@ namespace TabulaLuma
                 cornerFrames.Add(cornerFrame);
             }
             return cornerFrames;
-        }           
+        }
+
+        static Point2f[] OrderTriangleClockwise(Point2f[] pts)
+        {
+            // Compute centroid
+            var centroid = new Point2f(
+                (pts[0].X + pts[1].X + pts[2].X) / 3f,
+                (pts[0].Y + pts[1].Y + pts[2].Y) / 3f
+            );
+
+            // Compute angle from centroid to each point
+            var ordered = pts
+                .Select(p => new { Point = p, Angle = Math.Atan2(p.Y - centroid.Y, p.X - centroid.X) })
+                .OrderBy(pa => pa.Angle) // clockwise
+                .Select(pa => pa.Point)
+                .ToArray();
+
+            return ordered;
+        }
+        static int FindRightAngleIndex(Point2f[] triPts)
+        {
+            // find subtended angles at each triangle vertex
+            var angles = new List<Tuple<int, double>>();
+            for (int i = 0; i < 3; i++)
+            {
+                var a = triPts[i];
+                var x = triPts[(i + 1) % 3];
+                var y = triPts[(i + 2) % 3];
+                var v1 = x - a;
+                var v2 = y - a;
+                double dot = v1.DotProduct(v2);
+                double magV1 = Math.Sqrt(v1.X * v1.X + v1.Y * v1.Y);
+                double magV2 = Math.Sqrt(v2.X * v2.X + v2.Y * v2.Y);
+                double angle = Math.Acos(dot / (magV1 * magV2));
+                angles.Add(new Tuple<int, double>(i, angle));
+            }
+            angles = angles.OrderBy(a => a.Item2).ToList();
+            return angles[2].Item1;
+        }
 
         public static Corner[] GetCornersFromImage( Mat grey, double minArea, double maxArea)
         {
             var tags = new List<Corner>();
             var thresh = new Mat();
-            Cv2.Threshold(grey, thresh, 0, 255, ThresholdTypes.Otsu);
+            Cv2.Threshold(grey, thresh, 0, 255, ThresholdTypes.Otsu | ThresholdTypes.BinaryInv);
 
             Cv2.FindContours(thresh, out contours, out HierarchyIndex[] hierarchy, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
 
@@ -137,43 +174,46 @@ namespace TabulaLuma
             }).ToArray();
 
             foreach (var contour in contours)
-            {          
-                var rrect = Cv2.MinAreaRect(contour);
-                if (Math.Abs(rrect.Size.Width - rrect.Size.Height) < 10 // squarish
-                    && rrect.Size.Width > 45)
+            { 
+                var tri = Cv2.MinEnclosingTriangle(contour, out Point2f[] triPts);
+                if(triPts.Length != 3)
+                    continue; 
+
+                triPts = OrderTriangleClockwise(triPts);             
+                var iRa = FindRightAngleIndex(triPts);
+
+                //rotate triPts so right angle point is at index 0
+                triPts = [triPts[iRa], triPts[(iRa + 1) % 3], triPts[(iRa + 2) % 3] ];
+               
+                Point2f[] boundingParallelogram = [triPts[0], triPts[1], triPts[1] + triPts[2] - triPts[0], triPts[2]];
+
+                //  Set points for the destination rectangle
+                Size rectSize = new Size((int)triPts[0].DistanceTo(triPts[1]), (int)triPts[0].DistanceTo(triPts[2]));
+                Point2f[] dstPoints = new Point2f[]
                 {
-                    Point2f[] box = Cv2.BoxPoints(rrect);
-                    Mat src = thresh;
-
-                    // Get the destination rectangle (unrotated)
-                    Size rectSize = new Size((int)rrect.Size.Width, (int)rrect.Size.Height);
-
-                    // Destination points for the upright rectangle
-                    Point2f[] dstPoints = new Point2f[]
-                    {
                         new Point2f(0, 0),
                         new Point2f(rectSize.Width - 1, 0),
                         new Point2f(rectSize.Width - 1, rectSize.Height - 1),
                         new Point2f(0, rectSize.Height - 1)
-                    };
+                };
 
-                    // Get the perspective transform
-                    Mat M = Cv2.GetPerspectiveTransform(box, dstPoints);
+                // Get the perspective transform
+                Mat M = Cv2.GetPerspectiveTransform(boundingParallelogram, dstPoints);
 
-                    // Warp the source image to get the upright rectangle
-                    Mat rectMat = new Mat();
-                    Cv2.WarpPerspective(src, rectMat, M, rectSize);
+                // Warp the source image to get the upright rectangle
+                Mat rectMat = new Mat();
+                Cv2.WarpPerspective(thresh, rectMat, M, rectSize);
 
-                    if( TryDecodeCornerImage(rectMat, box, out Corner corner))
+                // crop the edges
+                var boundingRect = Cv2.BoundingRect(rectMat);
+                var rectMat2 = rectMat.SubMat(boundingRect);
+                if (Math.Abs(boundingRect.Width - boundingRect.Height) < 10)
+                {
+                    if (TryDecodeCornerImage(rectMat2, boundingParallelogram, out Corner corner))
                     {
-                        // Successfully decoded corner image
                         tags.Add(corner);
                     }
-                    else 
-                    {
-                 //       BitmapConverter.ToBitmap(rectMat).Save(@$"Z:\transfer\fails\debug_corner_{count++}.bmp");
-                    }
-                }
+                }            
             }
             return tags.ToArray();
         }
@@ -181,7 +221,6 @@ namespace TabulaLuma
         public static bool TryDecodeCornerImage( Mat image, Point2f[] box, out Corner corner, bool logFails = false)
         {
             count++;
-            if(logFails)  BitmapConverter.ToBitmap(image).Save(@$"Z:\transfer\debug_corner_{count}.bmp");
 
             corner = null;
 
@@ -196,80 +235,40 @@ namespace TabulaLuma
             double leftMean = Cv2.Mean(new Mat(image, new Rect(0, 0, cellWidth, image.Rows))).Val0;
             double rightMean = Cv2.Mean(new Mat(image, new Rect(image.Cols - cellWidth, 0, cellWidth, image.Rows))).Val0;
 
-            // Find the two darkest edges
+            // Find the two lightest edges
             var edges = new[] {
                 new { Name = "Top", Mean = topMean },
                 new { Name = "Bottom", Mean = bottomMean },
                 new { Name = "Left", Mean = leftMean },
                 new { Name = "Right", Mean = rightMean }
-            }.OrderBy(e => e.Mean).ToArray();
+            }.OrderByDescending(e => e.Mean).ToArray();
 
-            string border1 = edges[0].Name;
-            string border2 = edges[1].Name;
-
-            // Set barcode strip ROIs based on detected borders
-            Rect horizontalRoi, verticalRoi;
-            CornerOrientation orientation = (border1 == "Top" && border2 == "Right") || (border1 == "Right" && border2 == "Top") ? CornerOrientation.TopRight :
-                          (border1 == "Bottom" && border2 == "Left") || (border1 == "Left" && border2 == "Bottom") ? CornerOrientation.BottomLeft :
-                          (border1 == "Top" && border2 == "Left") || (border1 == "Left" && border2 == "Top") ? CornerOrientation.TopLeft :
-                          (border1 == "Bottom" && border2 == "Right") || (border1 == "Right" && border2 == "Bottom") ? CornerOrientation.BottomRight :
-                          CornerOrientation.Unknown;
-
-            // Starting from the orientation corner, step in diagonally to find the first white pixel
+            string borderName = edges[0].Name + edges[1].Name;
+        
+            if(borderName != "TopLeft" && borderName != "LeftTop")
+            {
+                return DumpFailData(count, "wrong orientation", image);
+            }
+            // Starting from the orientation corner, step in diagonally to find the first black pixel
             for(int i = 3; i < 10; i++)
             {
-                int x = orientation switch
+                byte pixelValue = image.At<byte>(i, i);
+                if(pixelValue < 55)
                 {
-                    CornerOrientation.TopLeft => i,
-                    CornerOrientation.TopRight => image.Cols - 1 - i,
-                    CornerOrientation.BottomLeft => i,
-                    CornerOrientation.BottomRight => image.Cols - 1 - i,
-                    _ => 0
-                };
-                int y = orientation switch
-                {
-                    CornerOrientation.TopLeft => i,
-                    CornerOrientation.TopRight => i,
-                    CornerOrientation.BottomLeft => image.Rows - 1 - i,
-                    CornerOrientation.BottomRight => image.Rows - 1 - i,
-                    _ => 0
-                };
-                byte pixelValue = image.At<byte>(y, x);
-                if(pixelValue > 200)
-                {
-                    // found white pixel
+                    // found black pixel
                     borderCellHeight = i;
                     borderCellWidth = i;
                     break;
                 }
             }
-          
-            switch (orientation)
-            {
-                case CornerOrientation.TopRight:
-                    horizontalRoi = new Rect(0, borderCellHeight, image.Cols - borderCellWidth, cellHeight);      // Top strip
-                    verticalRoi = new Rect(image.Cols - borderCellWidth - cellWidth, borderCellHeight, cellWidth, image.Rows - borderCellHeight);     // Right strip
-                    break;
-                case CornerOrientation.BottomLeft:
-                    horizontalRoi = new Rect(borderCellWidth, image.Rows - borderCellHeight - cellHeight, image.Cols - borderCellWidth, cellHeight);     // Bottom strip
-                    verticalRoi = new Rect(borderCellWidth, 0, cellWidth, image.Rows - borderCellHeight);      // Left strip
-                    break;
-                case CornerOrientation.TopLeft:
-                    horizontalRoi = new Rect(borderCellWidth, borderCellHeight, image.Cols - borderCellWidth, cellHeight);      // Top strip
-                    verticalRoi = new Rect(borderCellWidth, borderCellHeight, cellWidth, image.Rows  - borderCellHeight);      // Left strip
-                    break;
-                case CornerOrientation.BottomRight:
-                    horizontalRoi = new Rect(0, image.Rows - borderCellHeight - cellHeight, image.Cols - borderCellWidth, cellHeight);     // Bottom strip
-                    verticalRoi = new Rect(image.Cols - borderCellWidth - cellWidth, 0, cellWidth, image.Rows - borderCellHeight);     // Right strip
-                    break;
-                default:
-                    return false;
-            }
-  
-           
+
+            // Set barcode strip ROIs based on borders
+            Rect horizontalRoi = new Rect(borderCellWidth, borderCellHeight, image.Cols - borderCellWidth, cellHeight);      // Top strip
+            Rect verticalRoi = new Rect(borderCellWidth, borderCellHeight, cellWidth, image.Rows  - borderCellHeight);      // Left strip
+                     
             if( !CheckMatRoiValid(image, horizontalRoi) || !CheckMatRoiValid(image, verticalRoi))
             {
-                return false;
+                return DumpFailData(count, $"Invalid roi h:{horizontalRoi} v:{verticalRoi}", image );
             }
 
             try
@@ -277,49 +276,21 @@ namespace TabulaLuma
                 Mat horizontalStrip = new Mat(image, horizontalRoi);
                 Mat verticalStrip = new Mat(image, verticalRoi);
 
-              if(logFails)      BitmapConverter.ToBitmap(horizontalStrip).Save(@$"Z:\transfer\debug_horizontalStrip_{count}.bmp");
-              if(logFails)      BitmapConverter.ToBitmap(verticalStrip).Save(@$"Z:\transfer\debug_verticalStrip_{count}.bmp");
-
-                byte bits1 = ExtractBarcodeBits(horizontalStrip, true, logFails);
-                byte bits2 = ExtractBarcodeBits(verticalStrip, false, logFails);
-                // horizontal strips are read left to right, MSB to LSB
-                // vertical strips are read top to bottom, MSB to LSB
+                byte hBits = ExtractBarcodeBits(horizontalStrip, horizontal: true, logFails);
+                byte vBits = ExtractBarcodeBits(verticalStrip, horizontal: false, logFails);
+                // horizontal strips are read left to right
+                // vertical strips are read top to bottom
                 // Convert to clockwise reading of the corner bits
 
-                switch(orientation)
-                {
-                    case CornerOrientation.TopLeft:
-                        bits1 = ReverseBits(bits1);
-                        code = (UInt16)((bits1 << 7) | bits2);
-                        break;
-                    case CornerOrientation.TopRight:
-                        bits1 = ReverseBits(bits1);
-                        bits2 = ReverseBits(bits2);
-                        code = (UInt16)((bits2 << 7) | bits1);
-                        break;
-                    case CornerOrientation.BottomRight:
-                        bits2 = ReverseBits(bits2);                      
-                        code = (UInt16)((bits1 << 7) | bits2);
-                        break;
-                    case CornerOrientation.BottomLeft:
-                        code = (UInt16)((bits2 << 7) | bits1);
-                        break;
-                    default:
-                        return false;
-                }
+                code = (UInt16)((ReverseBits(hBits) << 7) | vBits);
+             
                 var setBits = System.Runtime.Intrinsics.X86.Popcnt.X64.PopCount(code);
                 if (setBits % 2 == 0)
-                    return false; // parity error
+                    return DumpFailData(count, $"parity hbits:{Convert.ToString(hBits, 2).PadLeft(8, '0')} vbits:{Convert.ToString(vBits, 2).PadLeft(8, '0')}", image, horizontalStrip, verticalStrip); // parity error
 
-                code = (ushort)(code & 0x3FFF);
-                corner = new Corner(code, box, orientation switch
-                {
-                    CornerOrientation.TopLeft => 0,
-                    CornerOrientation.TopRight => 1,
-                    CornerOrientation.BottomRight => 2,
-                    CornerOrientation.BottomLeft => 3,
-                    _ => -1
-                });             
+                code = (ushort)(code & 0x3FFF); // mask off any parity bit
+
+                corner = new Corner(code, box);                          
             }
             catch (Exception ex)
             {
@@ -328,6 +299,20 @@ namespace TabulaLuma
             }
 
             return true;
+        }
+        static bool DumpFailData(int count, string message, Mat image, Mat horizontalStrip = null, Mat verticalStrip = null, bool force = false)
+        {
+            if (!force)
+                return false;
+            if (!string.IsNullOrEmpty(message))
+                File.WriteAllText(@$"Z:\transfer\tl\{count}_debug_fail.txt", message);
+            if (image != null)
+                Cv2.ImWrite(@$"Z:\transfer\tl\{count}_debug_corner.bmp", image);
+            if(horizontalStrip != null)
+                Cv2.ImWrite(@$"Z:\transfer\tl\{count}_debug_horizontalStrip.bmp", horizontalStrip);
+            if(verticalStrip != null)
+                Cv2.ImWrite(@$"Z:\transfer\tl\{count}_debug_verticalStrip.bmp", verticalStrip);
+            return false;
         }
         public static byte ReverseBits(byte b)
         {
@@ -348,8 +333,8 @@ namespace TabulaLuma
             for (int i = 0; i < 8; i++)
             {
                 Rect bitRoi = horizontal
-                    ? new Rect((int)(i * cellWidth + 0.5), 0, (int)(cellWidth + 0.5), (int)(cellHeight + 0.5))   // For horizontal strip 
-                    : new Rect(0, (int)(i * cellHeight + 0.5), (int)(cellWidth + 0.5), (int)(cellHeight + 0.5));  // For vertical strip 
+                    ? new Rect((int)(i * cellWidth + 0.5), (int)cellHeight/2, (int)(cellWidth + 0.5), 1)   // For horizontal strip 
+                    : new Rect((int)cellWidth/2, (int)(i * cellHeight + 0.5), 1, (int)(cellHeight + 0.5));  // For vertical strip 
 
                 if (bitRoi.X + bitRoi.Width > strip.Cols)
                     bitRoi.Width = strip.Cols - bitRoi.X;
@@ -361,28 +346,13 @@ namespace TabulaLuma
                 means[i] = (byte)mean.Val0;
             }
 
-            if(logFails) File.AppendAllLines(@$"Z:\transfer\debug_means_{(horizontal ? 'H' : 'V')}_{count}.txt", new[] { string.Join(",", means) });
-
             var sortedMeans = means.OrderBy(m => m).ToArray();
 
-            if (sortedMeans[0] > 190)
-                return 0;
-            if (sortedMeans[7] < 125)
-                return 0xFF;
-
-            // find the sortedMean with the largest gap to the next value
-            var gaps = sortedMeans.Zip(sortedMeans.Skip(1), (a, b) => b - a).ToArray();
-            int maxGapIndex = Array.IndexOf(gaps, gaps.Max());
-            byte threshold = (byte)((sortedMeans[maxGapIndex] + sortedMeans[maxGapIndex + 1]) / 2);
-
-            if (threshold > 205)
-                return 0;
-            if (threshold < 125)
-                return 0xFF;
+            byte threshold = 128;      
          
             for (int i = 0; i < 8; i++)
             {
-                int bit = means[i] < threshold ? 1 : 0;
+                int bit = means[i] > threshold ? 1 : 0;
                 bits = (byte)((bits << 1) | bit);
             }
 
