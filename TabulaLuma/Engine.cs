@@ -110,6 +110,19 @@ namespace TabulaLuma
             int frameHeight = config.FrameHeight;
 
             var devices = new CaptureDevices();
+
+            // write all descriptors and their characteristics to console
+            var descriptors = devices.EnumerateDescriptors()
+           .Where(d => d.DeviceType == DeviceTypes.DirectShow);
+            foreach (var descriptor in descriptors)
+            {
+                System.Console.WriteLine($"Camera name: \"{descriptor.Name}\"");
+                foreach (var characteristic in descriptor.Characteristics)
+                {
+                    System.Console.WriteLine($" - {characteristic.PixelFormat} {characteristic.Width}x{characteristic.Height} {characteristic.FramesPerSecond}fps");
+                }
+            }
+
             var descriptor0 = devices.EnumerateDescriptors()
             .Where(d => d.DeviceType == DeviceTypes.DirectShow 
             && d.Name.Contains(config.Camera.Name)
