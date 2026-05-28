@@ -313,7 +313,6 @@ namespace TabulaLuma
             finally
             {
                 running = false;
-                cameraTask.Wait();
                 hardware.Shutdown();                        
             }
             return 0;
