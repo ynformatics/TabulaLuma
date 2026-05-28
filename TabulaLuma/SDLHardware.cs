@@ -50,8 +50,8 @@ namespace TabulaLuma
                 window = null;
             }
             SDL.Quit();
-            Console.WriteLine("Press any key to exit...");
-            Console.ReadKey();
+            //Console.WriteLine("Press any key to exit...");
+            //Console.ReadKey();
         }
         public void NewVideoFrame()
         {
@@ -94,6 +94,13 @@ namespace TabulaLuma
                             Shift = (sdlEvent.Key.Mod & (SDLKeymod.Lshift | SDLKeymod.Rshift)) != 0,
                             Alt = (sdlEvent.Key.Mod & (SDLKeymod.Lalt | SDLKeymod.Ralt)) != 0,
                         };
+
+                        // Ctrl+Q to exit
+                        if (keyEvent.Control && keyEvent.ScanCode == (int)SDLScancode.Q)
+                        {                           
+                            return false;
+                        }
+
                         keyboard.EnqueueKeyEvent(keyEvent);
                         break;
 
